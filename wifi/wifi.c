@@ -49,10 +49,22 @@ static char iface[PROPERTY_VALUE_MAX];
 // sockets is in
 
 #ifndef WIFI_DRIVER_MODULE_PATH
-#define WIFI_DRIVER_MODULE_PATH         "/system/lib/modules/wlan.ko"
+#define WIFI_DRIVER_MODULE_PATH         "/system/lib/modules/rt73usb.ko"
+#endif
+#ifndef WIFI_DRIVER_MODULE_USB_PATH
+#define WIFI_DRIVER_MODULE_USB_PATH     "/system/lib/modules/rt2x00usb.ko"
+#endif
+#ifndef WIFI_DRIVER_MODULE_LIB_PATH
+#define WIFI_DRIVER_MODULE_LIB_PATH     "/system/lib/modules/rt2x00lib.ko"
 #endif
 #ifndef WIFI_DRIVER_MODULE_NAME
-#define WIFI_DRIVER_MODULE_NAME         "wlan"
+#define WIFI_DRIVER_MODULE_NAME         "rt73usb"
+#endif
+#ifndef WIFI_DRIVER_MODULE_USB_NAME
+#define WIFI_DRIVER_MODULE_USB_NAME     "rt2x00usb"
+#endif
+#ifndef WIFI_DRIVER_MODULE_LIB_NAME
+#define WIFI_DRIVER_MODULE_LIB_NAME     "rt2x00lib"
 #endif
 #ifndef WIFI_DRIVER_MODULE_ARG
 #define WIFI_DRIVER_MODULE_ARG          ""
@@ -60,12 +72,16 @@ static char iface[PROPERTY_VALUE_MAX];
 #ifndef WIFI_FIRMWARE_LOADER
 #define WIFI_FIRMWARE_LOADER		""
 #endif
-#define WIFI_TEST_INTERFACE		"sta"
+#define WIFI_TEST_INTERFACE		"wlan0"
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 static const char DRIVER_MODULE_NAME[]  = WIFI_DRIVER_MODULE_NAME;
 static const char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
 static const char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
+static const char DRIVER_MODULE_USB_NAME[]  = WIFI_DRIVER_MODULE_USB_NAME;
+static const char DRIVER_MODULE_LIB_NAME[]  = WIFI_DRIVER_MODULE_LIB_NAME;
+static const char DRIVER_MODULE_USB_PATH[]  = WIFI_DRIVER_MODULE_USB_PATH;
+static const char DRIVER_MODULE_LIB_PATH[]  = WIFI_DRIVER_MODULE_LIB_PATH;
 static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
 static const char DRIVER_PROP_NAME[]    = "wlan.driver.status";
@@ -169,13 +185,24 @@ int wifi_load_driver()
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
 
+#if 0    
+    return 0;
+
+    LOGI("before check_driver_loaded");
     if (check_driver_loaded()) {
         return 0;
     }
-
+    LOGI("before insmod(DRIVER_MODULE_LIB_PATH");
+    if (insmod(DRIVER_MODULE_LIB_PATH, "") < 0)
+        return -1;
+    LOGI("before insmod(DRIVER_MODULE_USB_PATH");
+    if (insmod(DRIVER_MODULE_USB_PATH, "") < 0)
+        return -1;
+    LOGI("before insmod(DRIVER_MODULE_PATH");
     if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
         return -1;
-
+#endif
+    LOGI("before strcmp(FIRMWARE_LOADER)");
     if (strcmp(FIRMWARE_LOADER,"") == 0) {
         usleep(500000);
         property_set(DRIVER_PROP_NAME, "ok");
@@ -203,8 +230,13 @@ int wifi_load_driver()
 int wifi_unload_driver()
 {
     int count = 20; /* wait at most 10 seconds for completion */
+    
+    usleep(500000);
+    return 0;
 
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
+    if ( (rmmod(DRIVER_MODULE_NAME)     == 0) &&
+         (rmmod(DRIVER_MODULE_USB_NAME) == 0) &&
+         (rmmod(DRIVER_MODULE_LIB_NAME) == 0) ) {
 	while (count-- > 0) {
 	    if (!check_driver_loaded())
 		break;
@@ -375,7 +407,10 @@ int wifi_connect_to_supplicant()
     } else {
         strlcpy(ifname, iface, sizeof(ifname));
     }
-
+    //LOGI("Sleeping before opening connection to supplicant");
+    //sched_yield(); 
+    //usleep(10000000);
+    //LOGI("Opening connection to supplicant"); 
     ctrl_conn = wpa_ctrl_open(ifname);
     if (ctrl_conn == NULL) {
         LOGE("Unable to open connection to supplicant on \"%s\": %s",
