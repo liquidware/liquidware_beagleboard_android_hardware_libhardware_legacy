@@ -15,6 +15,10 @@ ifneq ($(TARGET_SIMULATOR),true)
   QEMU_HARDWARE := true
 endif
 
+#Testing GPS CML
+LOCAL_CFLAGS  += -DQEMU_HARDWARE
+QEMU_HARDWARE := true
+
 ifneq ($(TARGET_SIMULATOR),true)
 LOCAL_SHARED_LIBRARIES += libdl
 endif
