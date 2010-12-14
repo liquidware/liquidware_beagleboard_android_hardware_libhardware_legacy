@@ -42,6 +42,10 @@ typedef uint16_t GpsPositionMode;
 
 /** GPS status event values. */
 typedef uint16_t GpsStatusValue;
+
+/* SERIAL status event values */
+typedef uint16_t SerialStatusValue;
+
 // IMPORTANT: Note that the following values must match
 // constants in GpsLocationProvider.java.
 /** GPS status unknown. */
@@ -139,10 +143,21 @@ typedef struct {
     GpsUtcTime      timestamp;
 } GpsLocation;
 
+/** Represents a serial message. */
+typedef struct {
+	uint8_t flags;
+	char * data;
+} SerialMsg;
+
 /** Represents the status. */
 typedef struct {
     GpsStatusValue status;
 } GpsStatus;
+
+/** Represents the status. */
+typedef struct {
+    SerialStatusValue status;
+} SerialStatus;
 
 /** Represents SV information. */
 typedef struct {
@@ -193,14 +208,26 @@ typedef void (* gps_sv_status_callback)(GpsSvStatus* sv_info);
 /** Callback for reporting NMEA sentences. */
 typedef void (* gps_nmea_callback)(GpsUtcTime timestamp, const char* nmea, int length);
 
+/** Callback with status information. */
+typedef void (* serial_status_callback)(SerialStatus* status);
+
+/** Callback for reporting Serial messages. */
+typedef void (* serial_receive_callback)(SerialMsg* msg);
+
 /** GPS callback structure. */
 typedef struct {
         gps_location_callback location_cb;
         gps_status_callback status_cb;
         gps_sv_status_callback sv_status_cb;
         gps_nmea_callback nmea_cb;
+        serial_receive_callback receive_cb;
 } GpsCallbacks;
 
+/** SERIAL callback structure. */
+typedef struct {
+        serial_status_callback status_cb;
+        serial_receive_callback receive_cb;
+} SerialCallbacks;
 
 /** Represents the standard GPS interface. */
 typedef struct {
@@ -229,6 +256,8 @@ typedef struct {
      *  expected accuracy is measured in meters
      */
     int  (*inject_location)(double latitude, double longitude, float accuracy);
+
+    void (*serial_print)(const char* msg);
 
     /**
      * Specifies that the next call to start will not use the

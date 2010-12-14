@@ -50,17 +50,18 @@ qemu_check(void)
     return in_qemu;
 }
 
-static int
+int
 qemu_fd_write( int  fd, const char*  cmd, int  len )
 {
     int  len2;
     do {
         len2 = write(fd, cmd, len);
     } while (len2 < 0 && errno == EINTR);
+    fsync(fd);
     return len2;
 }
 
-static int
+ int
 qemu_fd_read( int  fd, char*  buff, int  len )
 {
     int  len2;
@@ -141,32 +142,46 @@ qemu_channel_open_tty( QemuChannel*  channel,
     char   prop[PROPERTY_VALUE_MAX];
     int    ret;
     
-    D("qemu_channel_open_tty: Reading property ro.kernel.android.%s", name); 
+    D("qemu_channel_open_tty: Begin");
+
     ret = snprintf(key, sizeof key, "ro.kernel.android.%s", name);
     if (ret >= (int)sizeof key)
         return -1;
     
-    D("qemu_channel_open_tty: Found key='%s'", key);
-    
     if (property_get(key, prop, "") == 0) {
-        D("no kernel-provided %s device name", name);
+        LOGE("qemu_channel_open_tty: no kernel-provided %s device name", name);
         return -1;
     }
 
     ret = snprintf(channel->device, sizeof channel->device,
                     "/dev/%s", prop);
-                    
-    D("qemu_channel_open_tty: saving qemu tty file channel->device='%s'", channel->device);
     
+    D("qemu_channel_open_tty: Using property ro.kernel.android.%s=%s, device=%s", name, prop, channel->device);
+
+
     if (ret >= (int)sizeof channel->device) {
-        D("%s device name too long: '%s'", name, prop);
+        LOGE("qemu_channel_open_tty: %s device name too long: '%s'", name, prop);
         return -1;
     }
 
     channel->is_tty = !memcmp("/dev/tty", channel->device, 8);
     
-    D("qemu_channel_open_tty: is_tty=%d", channel->is_tty);
+    if (channel->is_tty) {
+    	D("qemu_channel_open_tty: Using tty device %s", channel->device);
+    } else {
+    	LOGE("qemu_channel_open_tty: channel is not a tty");
+    }
+
     return 0;
+}
+
+void
+qemu_channel_close( QemuChannel*  channel,
+                    int fd)
+{
+	D("Closing %s", channel->device);
+	channel->is_inited = 0;
+	close(fd);
 }
 
 int
@@ -217,23 +232,36 @@ qemu_channel_open( QemuChannel*  channel,
     }
     else /* /dev/ttySn ? */
     {
-        D("qemu_channel_open: opening tty file '%s'", channel->device);
+        D("Opening device '%s'", channel->device);
         do {
-            fd = open(channel->device, mode);
-            D("qemu_channel_open: after open fd=%d errno=%d", fd, errno);
+        	fd = open(channel->device, O_RDWR | O_NONBLOCK, 0);
+            D("Waiting for device %s", channel->device);
         } while (fd < 0 && errno == EINTR);
+
+        if (fd < 0) {
+        	D("Error opening device, error=%s\n", strerror(errno));
+        	return -1;
+        } else {
+        	D("Device opened successfully\n");
+        }
 
         /* disable ECHO on serial lines */
         if (fd >= 0 && channel->is_tty) {
             struct termios  ios;
+            int ret, flags;
+
+            /* Set flags */
             tcgetattr( fd, &ios );
-            ios.c_cflag = B57600 | CRTSCTS | CS8 | CLOCAL | CREAD;
-            ios.c_lflag = 0;  /* disable ECHO, ICANON, etc... */
+            ios.c_cflag = B57600 | CS8 | CLOCAL | CREAD;
+            ios.c_cflag &= ~HUPCL; //disable hang-up on close to avoid reset
+            ios.c_lflag &= ~(ECHO | ICANON);
             tcsetattr( fd, TCSANOW, &ios );
-            D("qemu_channel_open: disabled ECHO on serial lines for device '%s' with fd result=%d", channel->device, fd);
+            D("Serial flags: c_iflag=%d,c_oflag=%d,c_cflag=%d,c_lflag=%d", ios.c_iflag, ios.c_oflag, ios.c_cflag, ios.c_lflag);
+            D("Successfully set flags for %s", channel->device);
+        } else {
+        	LOGE("qemu_channel_open: error opening device %s, fd=%d, is_tty=%d, errno=%d", channel->device, fd, channel->is_tty, errno);
         }
     }
-    D("qemu_channel_open: returning fd=%d", fd);
     return fd;
 }
 
@@ -280,31 +308,33 @@ qemu_control_fd(void)
 {
     static QemuChannel  channel[1];
     int                 fd;
+    char				dev[] = {"/dev/ttyUSB0"};
 
-    fd = qemu_channel_open( channel, "hw-control", O_RDWR );
+    fd = qemu_channel_open( channel, dev, O_RDWR );
     if (fd < 0) {
-        D("%s: could not open control channel: %s", __FUNCTION__,
+        D("%s: could not open control channel: %s, error: %s", __FUNCTION__, dev,
           strerror(errno));
     }
     return fd;
 }
 
-static int
-qemu_control_send(const char*  cmd, int  len)
+int
+qemu_control_send(int fd, const char*  cmd, int  len)
 {
-    int  fd, len2;
+    //int  fd, len2;
+	int len2;
 
     if (len < 0) {
         errno = EINVAL;
         return -1;
     }
 
-    fd = qemu_control_fd();
+    //fd = qemu_control_fd();
     if (fd < 0)
         return -1;
 
     len2 = qemu_fd_write(fd, cmd, len);
-    close(fd);
+    //close(fd);
     if (len2 != len) {
         D("%s: could not send everything %d < %d",
           __FUNCTION__, len2, len);
@@ -312,7 +342,6 @@ qemu_control_send(const char*  cmd, int  len)
     }
     return 0;
 }
-
 
 int
 qemu_control_command( const char*  fmt, ... )
@@ -335,7 +364,8 @@ qemu_control_command( const char*  fmt, ... )
         return -1;
     }
 
-    return qemu_control_send( command, len );
+    //return qemu_control_send( command, len );
+    return 0;
 }
 
 extern int  qemu_control_query( const char*  question, int  questionlen,

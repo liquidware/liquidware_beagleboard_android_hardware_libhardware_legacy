@@ -54,6 +54,11 @@ extern int  qemu_channel_open( QemuChannel*  channel,
                                const char*   name,
                                int           mode );
 
+extern void qemu_channel_close( QemuChannel*  channel,
+                    		    int fd);
+extern int qemu_fd_read( int  fd, char*  buff, int  len );
+extern int qemu_fd_write( int  fd, const char*  cmd, int  len );
+
 /* create a command made of a 4-hexchar prefix followed
  * by the content. the prefix contains the content's length
  * in hexadecimal coding.
@@ -73,6 +78,8 @@ extern int  qemu_command_format( char*        buffer,
  * returns 0 on success, or -1 on error.
  */
 extern int  qemu_control_command( const char*  fmt, ... );
+
+extern int qemu_control_send(int fd, const char*  cmd, int  len);
 
 /* sends a question to the hw-control channel, then receive an answer in
  * a user-allocated buffer. returns the length of the answer, or -1

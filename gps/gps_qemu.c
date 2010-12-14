@@ -6,6 +6,7 @@
 #include <sys/epoll.h>
 #include <math.h>
 #include <time.h>
+#include <unistd.h>
 
 #define  LOG_TAG  "gps_qemu"
 #include <cutils/log.h>
@@ -15,7 +16,7 @@
 /* the name of the qemud-controlled socket */
 #define  QEMU_CHANNEL_NAME  "gps"
 
-#define  GPS_DEBUG  0
+#define  GPS_DEBUG  1
 
 #if GPS_DEBUG
 #  define  D(...)   LOGD(__VA_ARGS__)
@@ -155,6 +156,8 @@ str2float( const char*  p, const char*  end )
 
 #define  NMEA_MAX_SIZE  83
 
+#define SERIAL_MSG_MAX_SIZE 1024
+
 typedef struct {
     int     pos;
     int     overflow;
@@ -167,6 +170,22 @@ typedef struct {
     char    in[ NMEA_MAX_SIZE+1 ];
 } NmeaReader;
 
+typedef struct {
+	int pos;
+	int overflow;
+	SerialMsg receive;
+	serial_receive_callback callback;
+	char in [SERIAL_MSG_MAX_SIZE + 1];
+} SerialReader;
+
+typedef struct {
+	int pos;
+	int overflow;
+	SerialMsg transmit;
+	char out [SERIAL_MSG_MAX_SIZE + 1];
+} SerialWriter;
+
+SerialWriter serial_writer[1];
 
 static void
 nmea_reader_update_utc_diff( NmeaReader*  r )
@@ -196,6 +215,16 @@ nmea_reader_update_utc_diff( NmeaReader*  r )
 
 
 static void
+serial_reader_init( SerialReader*  r )
+{
+    memset( r, 0, sizeof(*r) );
+
+    r->pos      = 0;
+    r->overflow = 0;
+    r->callback = NULL;
+}
+
+static void
 nmea_reader_init( NmeaReader*  r )
 {
     memset( r, 0, sizeof(*r) );
@@ -219,6 +248,18 @@ nmea_reader_set_callback( NmeaReader*  r, gps_location_callback  cb )
         D("%s: sending latest fix to new callback", __FUNCTION__);
         r->callback( &r->fix );
         r->fix.flags = 0;
+    }
+}
+
+static void
+serial_reader_set_callback( SerialReader*  r, serial_receive_callback  cb )
+{
+	D("Setting callback in %s", __FUNCTION__);
+    r->callback = cb;
+    if (cb != NULL && r->receive.flags != 0) {
+        D("%s: sending latest receive message to new callback", __FUNCTION__);
+        r->callback( &r->receive );
+        r->receive.flags = 0;
     }
 }
 
@@ -501,6 +542,60 @@ nmea_reader_parse( NmeaReader*  r )
     }
 }
 
+static void
+serial_reader_parse( SerialReader*  r )
+{
+   /* we received a complete sentence, now parse it to generate
+    * a new serial message...
+    */
+
+	/**
+	 * Error check
+	 */
+    D("Received: '%.*s'", r->pos, r->in);
+    if (r->pos < 2) {
+        D("Too short. discarded.");
+        return;
+    }
+
+    /*
+     * Parse the message
+     */
+    char * pch;
+    int msg_id = 0;
+    char * msg_txt = NULL;
+
+    pch = strtok(r->in, ",");
+    if (pch != NULL) {
+    	msg_id = atoi(pch);
+    	D("Serial Message ID=%d", msg_id);
+    	pch = strtok(NULL, ",");
+    	msg_txt = pch;
+    	if (msg_txt != NULL) {
+    		/* Store a pointer to the data */
+    		r->receive.data = msg_txt;
+    		r->receive.flags = 1;				//message received
+    	} else {
+    		D("No message");
+    	}
+    } else {
+    	D("Invalid message");
+    }
+
+    /**
+     * Handle the message
+     */
+	if (r->receive.flags != 0) {
+	    if (r->callback) {
+	    	D("%s sending message '%s' to callback", __FUNCTION__, msg_txt);
+	        r->callback(&r->receive);
+	        r->receive.flags = 0;
+	    }
+	    else {
+	        D("No callback, keeping data until needed !");
+	    }
+	}
+}
 
 static void
 nmea_reader_addc( NmeaReader*  r, int  c )
@@ -521,6 +616,30 @@ nmea_reader_addc( NmeaReader*  r, int  c )
 
     if (c == '\n') {
         nmea_reader_parse( r );
+        r->pos = 0;
+    }
+}
+
+static void
+serial_reader_addc( SerialReader*  r, int  c )
+{
+    if (r->overflow) {
+        r->overflow = (c != '\n');
+        return;
+    }
+
+    if (r->pos >= (int) sizeof(r->in)-1 ) {
+        r->overflow = 1;
+        r->pos      = 0;
+        return;
+    }
+
+    r->in[r->pos] = (char)c;
+    r->pos       += 1;
+
+    if (c == '\n') {
+    	r->in[r->pos - 1] = 0; //trim the '\n' char
+        serial_reader_parse(r);
         r->pos = 0;
     }
 }
@@ -553,7 +672,6 @@ typedef struct {
 } GpsState;
 
 static GpsState  _gps_state[1];
-
 
 static void
 gps_state_done( GpsState*  s )
@@ -614,7 +732,7 @@ epoll_register( int  epoll_fd, int  fd )
     flags = fcntl(fd, F_GETFL);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-    ev.events  = EPOLLIN;
+    ev.events  = EPOLLIN | EPOLLOUT;
     ev.data.fd = fd;
     do {
         ret = epoll_ctl( epoll_fd, EPOLL_CTL_ADD, fd, &ev );
@@ -642,12 +760,14 @@ gps_state_thread( void*  arg )
 {
     GpsState*   state = (GpsState*) arg;
     NmeaReader  reader[1];
+    SerialReader serial_reader[1];
     int         epoll_fd   = epoll_create(2);
     int         started    = 0;
     int         gps_fd     = state->fd;
     int         control_fd = state->control[1];
 
     nmea_reader_init( reader );
+    serial_reader_init( serial_reader );
 
     // register control file descriptors for polling
     epoll_register( epoll_fd, control_fd );
@@ -660,7 +780,7 @@ gps_state_thread( void*  arg )
         struct epoll_event   events[2];
         int                  ne, nevents;
 
-        nevents = epoll_wait( epoll_fd, events, 2, -1 );
+        nevents = epoll_wait( epoll_fd, events, 2, 100 );
         if (nevents < 0) {
             if (errno != EINTR)
                 LOGE("epoll_wait() unexpected error: %s", strerror(errno));
@@ -671,6 +791,9 @@ gps_state_thread( void*  arg )
             if ((events[ne].events & (EPOLLERR|EPOLLHUP)) != 0) {
                 LOGE("EPOLLERR or EPOLLHUP after epoll_wait() !?");
                 goto Exit;
+            }
+            if ((events[ne].events & EPOLLOUT) != 0) {
+            	; //nothing
             }
             if ((events[ne].events & EPOLLIN) != 0) {
                 int  fd = events[ne].data.fd;
@@ -691,8 +814,10 @@ gps_state_thread( void*  arg )
                     else if (cmd == CMD_START) {
                         if (!started) {
                             D("gps thread starting  location_cb=%p", state->callbacks.location_cb);
+                            D("serial thread starting  location_cb=%p", state->callbacks.receive_cb);
                             started = 1;
                             nmea_reader_set_callback( reader, state->callbacks.location_cb );
+                            serial_reader_set_callback( serial_reader, state->callbacks.receive_cb );
                         }
                     }
                     else if (cmd == CMD_STOP) {
@@ -700,6 +825,7 @@ gps_state_thread( void*  arg )
                             D("gps thread stopping");
                             started = 0;
                             nmea_reader_set_callback( reader, NULL );
+                            serial_reader_set_callback( serial_reader, NULL );
                         }
                     }
                 }
@@ -718,9 +844,8 @@ gps_state_thread( void*  arg )
                                 LOGE("error while reading from gps daemon socket: %s:", strerror(errno));
                             break;
                         }
-                        D("received %d bytes: %.*s", ret, ret, buff);
                         for (nn = 0; nn < ret; nn++)
-                            nmea_reader_addc( reader, buff[nn] );
+                        	serial_reader_addc(serial_reader, buff[nn]);
                     }
                     D("gps fd event end");
                 }
@@ -746,7 +871,7 @@ gps_state_init( GpsState*  state )
 
     state->fd = qemu_channel_open( &state->channel,
                                    QEMU_CHANNEL_NAME,
-                                   O_RDONLY );
+                                   O_RDWR);
 
     if (state->fd < 0) {
         D("no gps emulation detected");
@@ -801,10 +926,12 @@ qemu_gps_init(GpsCallbacks* callbacks)
 static void
 qemu_gps_cleanup(void)
 {
+#if 0
     GpsState*  s = _gps_state;
 
     if (s->init)
         gps_state_done(s);
+#endif
 }
 
 
@@ -827,6 +954,7 @@ qemu_gps_start()
 static int
 qemu_gps_stop()
 {
+#if 0
     GpsState*  s = _gps_state;
 
     if (!s->init) {
@@ -836,7 +964,9 @@ qemu_gps_stop()
 
     D("%s: called", __FUNCTION__);
     gps_state_stop(s);
+#endif
     return 0;
+
 }
 
 
@@ -850,6 +980,15 @@ static int
 qemu_gps_inject_location(double latitude, double longitude, float accuracy)
 {
     return 0;
+}
+
+static void
+qemu_gps_serial_print(const char* msg)
+{
+	GpsState*  s = _gps_state;
+	D("Printing '%s' from %s", msg, __FUNCTION__);
+	qemu_control_send(s->fd, msg, strlen(msg));
+	D("%s Done Printing", __FUNCTION__);
 }
 
 static void
@@ -876,6 +1015,7 @@ static const GpsInterface  qemuGpsInterface = {
     qemu_gps_cleanup,
     qemu_gps_inject_time,
     qemu_gps_inject_location,
+    qemu_gps_serial_print,
     qemu_gps_delete_aiding_data,
     qemu_gps_set_position_mode,
     qemu_gps_get_extension,
