@@ -11,12 +11,18 @@ static void
 gps_find_hardware( void )
 {
 #ifdef HAVE_QEMU_GPS_HARDWARE
+    LOGD("gps: checking for qemu");
     if (qemu_check()) {
+        LOGD("gps: qemu found, getting qemu_interface");
         sGpsInterface = gps_get_qemu_interface();
         if (sGpsInterface) {
             LOGD("using QEMU GPS Hardware emulation\n");
             return;
+        } else {
+            LOGD("gps: gemu GPS interface not found");
         }
+    } else {
+        LOGD("gps: qemu not found");
     }
 #endif
 

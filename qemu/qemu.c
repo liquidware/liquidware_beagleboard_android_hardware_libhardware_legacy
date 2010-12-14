@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#define  QEMU_DEBUG  0
+#define  QEMU_DEBUG  1
 
 #if QEMU_DEBUG
 #  define  D(...)   LOGD(__VA_ARGS__)
@@ -140,11 +140,14 @@ qemu_channel_open_tty( QemuChannel*  channel,
     char   key[PROPERTY_KEY_MAX];
     char   prop[PROPERTY_VALUE_MAX];
     int    ret;
-
+    
+    D("qemu_channel_open_tty: Reading property ro.kernel.android.%s", name); 
     ret = snprintf(key, sizeof key, "ro.kernel.android.%s", name);
     if (ret >= (int)sizeof key)
         return -1;
-
+    
+    D("qemu_channel_open_tty: Found key='%s'", key);
+    
     if (property_get(key, prop, "") == 0) {
         D("no kernel-provided %s device name", name);
         return -1;
@@ -152,12 +155,17 @@ qemu_channel_open_tty( QemuChannel*  channel,
 
     ret = snprintf(channel->device, sizeof channel->device,
                     "/dev/%s", prop);
+                    
+    D("qemu_channel_open_tty: saving qemu tty file channel->device='%s'", channel->device);
+    
     if (ret >= (int)sizeof channel->device) {
         D("%s device name too long: '%s'", name, prop);
         return -1;
     }
 
     channel->is_tty = !memcmp("/dev/tty", channel->device, 8);
+    
+    D("qemu_channel_open_tty: is_tty=%d", channel->is_tty);
     return 0;
 }
 
@@ -209,18 +217,23 @@ qemu_channel_open( QemuChannel*  channel,
     }
     else /* /dev/ttySn ? */
     {
+        D("qemu_channel_open: opening tty file '%s'", channel->device);
         do {
             fd = open(channel->device, mode);
+            D("qemu_channel_open: after open fd=%d errno=%d", fd, errno);
         } while (fd < 0 && errno == EINTR);
 
         /* disable ECHO on serial lines */
         if (fd >= 0 && channel->is_tty) {
             struct termios  ios;
             tcgetattr( fd, &ios );
+            ios.c_cflag = B57600 | CRTSCTS | CS8 | CLOCAL | CREAD;
             ios.c_lflag = 0;  /* disable ECHO, ICANON, etc... */
             tcsetattr( fd, TCSANOW, &ios );
+            D("qemu_channel_open: disabled ECHO on serial lines for device '%s' with fd result=%d", channel->device, fd);
         }
     }
+    D("qemu_channel_open: returning fd=%d", fd);
     return fd;
 }
 
