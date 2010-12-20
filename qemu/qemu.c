@@ -61,7 +61,7 @@ qemu_fd_write( int  fd, const char*  cmd, int  len )
     return len2;
 }
 
- int
+int
 qemu_fd_read( int  fd, char*  buff, int  len )
 {
     int  len2;
@@ -132,44 +132,62 @@ qemu_channel_open_qemud_old( QemuChannel*  channel,
     return 0;
 }
 
+static int
+qemu_channel_get_device_tty_initrc(QemuChannel*  channel,
+        					   	   const char*   name,
+        					   	   int           mode ) {
+    char   key[PROPERTY_KEY_MAX];
+    char   prop[PROPERTY_VALUE_MAX];
+    int    ret = -1;
+
+    ret = snprintf(key, sizeof key, "ro.kernel.android.%s", name);
+	if (ret >= (int)sizeof key)
+		return -1;
+
+	if (property_get(key, prop, "") == 0) {
+		LOGE("qemu_channel_get_device_tty_initrc: no kernel-provided %s device name", name);
+		return -1;
+	}
+
+	ret = snprintf(channel->device, sizeof channel->device,
+					"/dev/%s", prop);
+
+	D("Using property ro.kernel.android.%s=%s, device=%s", name, prop, channel->device);
+	if (ret >= (int)sizeof channel->device) {
+		LOGE("qemu_channel_open_tty: %s device name too long: '%s'", name, prop);
+		return -1;
+	}
+
+	return ret;
+}
 
 static int
 qemu_channel_open_tty( QemuChannel*  channel,
                        const char*   name,
                        int           mode )
 {
-    char   key[PROPERTY_KEY_MAX];
-    char   prop[PROPERTY_VALUE_MAX];
-    int    ret;
+	int ret;
+	D("qemu_channel_open_tty: Begin");
     
-    D("qemu_channel_open_tty: Begin");
-
-    ret = snprintf(key, sizeof key, "ro.kernel.android.%s", name);
-    if (ret >= (int)sizeof key)
-        return -1;
-    
-    if (property_get(key, prop, "") == 0) {
-        LOGE("qemu_channel_open_tty: no kernel-provided %s device name", name);
-        return -1;
+    if (!channel->getDeviceFromApp) {
+    	//Disabled
+    	//ret = qemu_channel_get_device_tty_initrc(channel,
+    	//										 name,
+    	//										 mode);
+    	if (ret < 0) {
+    		LOGE("Error: couldn't get tty device from init.rc file");
+    		return -1;
+    	}
     }
-
-    ret = snprintf(channel->device, sizeof channel->device,
-                    "/dev/%s", prop);
     
-    D("qemu_channel_open_tty: Using property ro.kernel.android.%s=%s, device=%s", name, prop, channel->device);
-
-
-    if (ret >= (int)sizeof channel->device) {
-        LOGE("qemu_channel_open_tty: %s device name too long: '%s'", name, prop);
-        return -1;
-    }
-
+    D("qemu_channel_open_tty: device=%s getDeviceFromApp=%d", channel->device, channel->getDeviceFromApp);
     channel->is_tty = !memcmp("/dev/tty", channel->device, 8);
     
     if (channel->is_tty) {
     	D("qemu_channel_open_tty: Using tty device %s", channel->device);
     } else {
-    	LOGE("qemu_channel_open_tty: channel is not a tty");
+    	LOGE("Error: channel is not a tty");
+    	return -1;
     }
 
     return 0;
@@ -185,11 +203,52 @@ qemu_channel_close( QemuChannel*  channel,
 }
 
 int
+qemu_channel_get_baud(int baud) {
+	int bmask;
+
+	switch (baud) {
+	case 4800:
+		bmask = B4800;
+		break;
+	case 9600:
+		bmask = B9600;
+		break;
+	case 57600:
+		bmask = B57600;
+		break;
+	case 115200:
+		bmask = B57600;
+		break;
+	case 230400:
+		bmask = B230400;
+		break;
+	case 1000000:
+		bmask = B1000000;
+		break;
+	case 2000000:
+		bmask = B2000000;
+		break;
+	case 3000000:
+		bmask = B3000000;
+		break;
+	case 4000000:
+		bmask = B4000000;
+		break;
+	default:
+		bmask = B57600;
+	}
+
+	D("Serial baud %d, mask: %d", baud, bmask);
+	return bmask;
+}
+
+int
 qemu_channel_open( QemuChannel*  channel,
                    const char*   name,
                    int           mode )
 {
     int  fd = -1;
+    D("qemu_channel_open: device=%s getDeviceFromApp=%d", channel->device, channel->getDeviceFromApp);
 
     /* initialize the channel is needed */
     if (!channel->is_inited)
@@ -197,11 +256,12 @@ qemu_channel_open( QemuChannel*  channel,
         channel->is_inited = 1;
 
         do {
-            if (qemu_channel_open_qemud(channel, name) == 0)
-                break;
+        	// disabled
+            //if (qemu_channel_open_qemud(channel, name) == 0)
+            //    break;
 
-            if (qemu_channel_open_qemud_old(channel, name) == 0)
-                break;
+            //if (qemu_channel_open_qemud_old(channel, name) == 0)
+            //    break;
 
             if (qemu_channel_open_tty(channel, name, mode) == 0)
                 break;
@@ -211,10 +271,13 @@ qemu_channel_open( QemuChannel*  channel,
         } while (0);
 
         channel->is_available = 1;
+    } else {
+    	D("qemu_channel_open: channel already init");
     }
 
     /* try to open the file */
     if (!channel->is_available) {
+    	D("qemu_channel_open: file not available");
         errno = ENOENT;
         return -1;
     }
@@ -249,10 +312,13 @@ qemu_channel_open( QemuChannel*  channel,
         if (fd >= 0 && channel->is_tty) {
             struct termios  ios;
             int ret, flags;
+            int baud;
+
+            baud = qemu_channel_get_baud(channel->baud);
 
             /* Set flags */
             tcgetattr( fd, &ios );
-            ios.c_cflag = B57600 | CS8 | CLOCAL | CREAD;
+            ios.c_cflag =  baud | CS8 | CLOCAL | CREAD;
             ios.c_cflag &= ~HUPCL; //disable hang-up on close to avoid reset
             ios.c_lflag &= ~(ECHO | ICANON);
             tcsetattr( fd, TCSANOW, &ios );

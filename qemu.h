@@ -38,7 +38,9 @@ typedef struct {
     char   is_qemud_old;
     char   is_tty;
     int    fd;
-    char   device[32];
+    int    baud;
+    int	   getDeviceFromApp;
+    char   device[64];
 } QemuChannel;
 
 /* try to open a qemu communication channel.
