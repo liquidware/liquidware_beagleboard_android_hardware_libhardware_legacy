@@ -213,11 +213,17 @@ qemu_channel_get_baud(int baud) {
 	case 9600:
 		bmask = B9600;
 		break;
+	case 19200:
+		bmask = B19200;
+		break;
+	case 38400:
+		bmask = B38400;
+		break;
 	case 57600:
 		bmask = B57600;
 		break;
 	case 115200:
-		bmask = B57600;
+		bmask = B115200;
 		break;
 	case 230400:
 		bmask = B230400;
@@ -235,7 +241,7 @@ qemu_channel_get_baud(int baud) {
 		bmask = B4000000;
 		break;
 	default:
-		bmask = B57600;
+		bmask = B9600;
 	}
 
 	D("Serial baud %d, mask: %d", baud, bmask);
